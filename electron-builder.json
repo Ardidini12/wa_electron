@@ -1,0 +1,22 @@
+{
+    "appId": "com.eduardalidini.bssWhatsappSender",
+    "files": [
+        "dist-electron",
+        "dist-react"
+    ],
+    "extraResources": ["dist-electron/preload.cjs"],
+    "icon": "./Logo-BSS.png",
+    "mac": {
+        "target": "dmg"
+    },
+    "linux": {
+        "target": "AppImage",
+        "category": "Utility"
+    },
+    "win": {
+        "target": [
+            "portable",
+            "msi"
+        ]
+    }
+}

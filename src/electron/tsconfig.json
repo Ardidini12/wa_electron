@@ -1,0 +1,14 @@
+{
+    "compilerOptions": {
+       /* Enable all strict type checking options */
+       "strict": true,
+       /* Set the JavaScript language version for emitted JavaScript */
+       "target": "ESNext",
+       /* Specify module system for the program */
+       "module": "NodeNext",
+       /* Redirect output structure to this directory */
+       "outDir": "../../dist-electron",
+       /* Skip type checking of declaration files */
+       "skipLibCheck": true
+    }
+}
