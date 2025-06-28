@@ -1,6 +1,36 @@
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+debug
+window.electron.bulk.getSchedulerStatus()
+Manual Trigger: If needed, you can force start with window.electron.bulk.forceStartProcessing()
+
+npx @electron/packager . WhatsAppBulkSender --platform=win32 --arch=x64 --out=dist --overwrite --ignore="node_modules/((?!better-sqlite3|whatsapp-web.js).)*"
+
+npx @electron/packager . WhatsAppBulkSender --platform=win32 --arch=x64 --out=dist --overwrite
+
+
+Console Commands for Sales Monitoring:
+window.electron.sales.getSalesSettings()
+- Check current settings
+window.electron.sales.getSalesMessageStatistics()
+- Get message stats
+window.electron.sales.getSalesScheduledMessages(1, 50, {}, {})
+- Get scheduled messages
+window.electron.sales.fetchSalesNow()
+- Trigger manual fetch
+window.electron.sales.getLastFetchTime()
+- Check last fetch time
+window.electron.sales.getSales(1, 10, {town: "all", search: "", startDate: null, endDate: null})
+- Get sales list
+Event Listeners (add to console):
+window.electron.sales.onSalesFetched((data) => console.log("Sales fetched:", data))
+window.electron.sales.onMessageSent((data) => console.log("Message sent:", data))
+window.electron.sales.onMessageFailed((data) => console.log("Message failed:", data))
+window.electron.sales.onMessagesScheduled((data) => console.log("Messages scheduled:", data))
+Quick Test Commands:
+console.log("Auto-scheduler enabled:", (await window.electron.sales.getSalesSettings()).settings?.autoScheduler)
+console.log("Recent sales:", (await window.electron.sales.getSales(1, 5, {town: "all", search: "", startDate: null, endDate: null})).sales)
 
 Currently, two official plugins are available:
 

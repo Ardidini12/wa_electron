@@ -119,7 +119,7 @@ function App() {
               onLogout={handleLogout}
             />
           )}
-        </div>
+      </div>
       </div>
     </ThemeProvider>
   );

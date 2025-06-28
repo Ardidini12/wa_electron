@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useTheme } from './ThemeProvider';
 import './Dashboard.css';
+import Contacts from './Contacts';
+import Templates from './Templates';
+import BulkSender from './BulkSender';
+import SalesAPI from './SalesAPI';
+
+import WhatsAppStatusCard from './WhatsAppStatusCard';
 
 interface User {
   username: string;
@@ -24,9 +30,11 @@ interface DashboardProps {
 }
 
 type WhatsAppStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'authenticated' | 'connected';
+type ActiveView = 'dashboard' | 'contacts' | 'templates' | 'bulk-sender' | 'sales-api';
 
 const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const { theme, setTheme } = useTheme();
+  const [activeView, setActiveView] = useState<ActiveView>('dashboard');
   const [whatsappStatus, setWhatsappStatus] = useState<WhatsAppStatus>('disconnected');
   const [qrString, setQrString] = useState<string | null>(null);
   const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
@@ -36,14 +44,16 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const [liveConnectionTime, setLiveConnectionTime] = useState<string>('');
 
   useEffect(() => {
-    const cleanup = setupWhatsAppListeners();
+    const whatsappCleanup = setupWhatsAppListeners();
     // Try auto-connection only once
     if (!autoConnectAttempted && !isConnecting) {
       tryAutoConnection();
     }
     
     // Cleanup listeners on unmount
-    return cleanup;
+    return () => {
+      whatsappCleanup();
+    };
   }, [autoConnectAttempted, isConnecting]);
 
   // Live timer effect for connection duration
@@ -134,7 +144,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
       
       if (result) {
         console.log('[Dashboard] Auto-connection initiated successfully');
-        // Status will be updated via event listeners
+        // Check status after successful auto-connect
+        const status = await window.electron.whatsapp.getStatus();
+        if (status.connected && status.sessionInfo) {
+          setWhatsappStatus('connected');
+          setSessionInfo(status.sessionInfo);
+        }
       } else {
         console.log('[Dashboard] Auto-connection failed - no saved session or connection failed');
         setWhatsappStatus('disconnected');
@@ -263,6 +278,124 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
 
   const status = getStatusDisplay();
 
+  const renderMainContent = () => {
+    switch (activeView) {
+      case 'contacts':
+        return <Contacts />;
+      case 'templates':
+        return <Templates />;
+      case 'bulk-sender':
+        return <BulkSender />;
+      case 'sales-api':
+        return <SalesAPI />;
+      
+      case 'dashboard':
+      default:
+        return (
+          <div className="whatsapp-section">
+            <div className="section-header">
+              <h3>WhatsApp Connection</h3>
+              <div className={`status-indicator ${status.color}`}>
+                <span className="status-icon">{status.icon}</span>
+                <span className="status-text">{status.text}</span>
+              </div>
+            </div>
+
+            {error && (
+              <div className="error-message">
+                <span className="error-icon">⚠️</span>
+                {error}
+              </div>
+            )}
+
+            <div className="whatsapp-content">
+              {whatsappStatus === 'qr_ready' && qrString && (
+                <div className="qr-section">
+                  <h4>Scan QR Code with WhatsApp</h4>
+                  <div className="qr-code-container">
+                    <QRCodeDisplay qrString={qrString} />
+                  </div>
+                  <p className="qr-instructions">
+                    1. Open WhatsApp on your phone<br/>
+                    2. Go to Settings → Linked Devices<br/>
+                    3. Tap "Link a Device"<br/>
+                    4. Scan this QR code
+                  </p>
+                </div>
+              )}
+
+              {whatsappStatus === 'connected' && sessionInfo && (
+                <div className="session-info">
+                  <h4>Session Information</h4>
+                  
+                  {sessionInfo.profilePicUrl && (
+                    <div className="session-profile">
+                      <img 
+                        src={sessionInfo.profilePicUrl} 
+                        alt="WhatsApp Profile" 
+                        className="whatsapp-profile-pic"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+                  
+                  <div className="session-details">
+                    <div className="session-item">
+                      <label>Name:</label>
+                      <span>{sessionInfo.name}</span>
+                    </div>
+                    <div className="session-item">
+                      <label>Phone:</label>
+                      <span>+{sessionInfo.phoneNumber}</span>
+                    </div>
+                    <div className="session-item">
+                      <label>Platform:</label>
+                      <span>{sessionInfo.platform}</span>
+                    </div>
+                    <div className="session-item">
+                      <label>Connected:</label>
+                      <span>{new Date(sessionInfo.connectedAt).toLocaleString()}</span>
+                    </div>
+                    <div className="session-item">
+                      <label>Duration:</label>
+                      <span className="live-timer">{liveConnectionTime || sessionInfo.sessionDuration}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="session-actions">
+                    <button 
+                      className="whatsapp-logout-button"
+                      onClick={handleWhatsAppLogout}
+                    >
+                      Logout WhatsApp
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(whatsappStatus === 'disconnected' || whatsappStatus === 'connecting') && (
+                <div className="connection-section">
+                  <div className="connection-status">
+                    <div className="connection-prompt">
+                      <p>Click to connect to WhatsApp</p>
+                      <button 
+                        className="connect-button"
+                        onClick={initializeWhatsApp}
+                      >
+                        Connect WhatsApp
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+    }
+  };
+
   return (
     <div className="dashboard">
       <div className="dashboard-header">
@@ -288,122 +421,73 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
               <option value="system">System</option>
             </select>
           </div>
+          
           <button className="logout-button" onClick={onLogout}>
             Logout
           </button>
         </div>
       </div>
 
-      <div className="dashboard-content">
-        <div className="whatsapp-section">
-          <div className="section-header">
-            <h3>WhatsApp Connection</h3>
-            <div className={`status-indicator ${status.color}`}>
-              <span className="status-icon">{status.icon}</span>
-              <span className="status-text">{status.text}</span>
-            </div>
-          </div>
+      <div className="dashboard-main">
+        <div className="sidebar">
+          <nav className="sidebar-nav">
+            <button 
+              className={`nav-item ${activeView === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setActiveView('dashboard')}
+            >
+              <span className="nav-icon">🏠</span>
+              <span className="nav-text">Dashboard</span>
+            </button>
+            
+            <button 
+              className={`nav-item ${activeView === 'contacts' ? 'active' : ''}`}
+              onClick={() => setActiveView('contacts')}
+            >
+              <span className="nav-icon">👥</span>
+              <span className="nav-text">Contacts</span>
+            </button>
+            
+            <button 
+              className={`nav-item ${activeView === 'templates' ? 'active' : ''}`}
+              onClick={() => setActiveView('templates')}
+            >
+              <span className="nav-icon">📝</span>
+              <span className="nav-text">Templates</span>
+            </button>
+            
+            <button 
+              className={`nav-item ${activeView === 'bulk-sender' ? 'active' : ''}`}
+              onClick={() => setActiveView('bulk-sender')}
+            >
+              <span className="nav-icon">📢</span>
+              <span className="nav-text">Bulk Sender</span>
+            </button>
+            
+            <button 
+              className={`nav-item ${activeView === 'sales-api' ? 'active' : ''}`}
+              onClick={() => setActiveView('sales-api')}
+            >
+              <span className="nav-icon">💰</span>
+              <span className="nav-text">Sales API</span>
+            </button>
+            
 
-          {error && (
-            <div className="error-message">
-              <span className="error-icon">⚠️</span>
-              {error}
-            </div>
-          )}
-
-          <div className="whatsapp-content">
-            {whatsappStatus === 'qr_ready' && qrString && (
-              <div className="qr-section">
-                <h4>Scan QR Code with WhatsApp</h4>
-                <div className="qr-code-container">
-                  <QRCodeDisplay qrString={qrString} />
-                </div>
-                <p className="qr-instructions">
-                  1. Open WhatsApp on your phone<br/>
-                  2. Go to Settings → Linked Devices<br/>
-                  3. Tap "Link a Device"<br/>
-                  4. Scan this QR code
-                </p>
-              </div>
-            )}
-
-            {whatsappStatus === 'connected' && sessionInfo && (
-              <div className="session-info">
-                <h4>Session Information</h4>
-                
-                {sessionInfo.profilePicUrl && (
-                  <div className="session-profile">
-                    <img 
-                      src={sessionInfo.profilePicUrl} 
-                      alt="WhatsApp Profile" 
-                      className="whatsapp-profile-pic"
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none';
-                      }}
-                    />
-                  </div>
-                )}
-                
-                <div className="session-details">
-                  <div className="session-item">
-                    <label>Name:</label>
-                    <span>{sessionInfo.name}</span>
-                  </div>
-                  <div className="session-item">
-                    <label>Phone:</label>
-                    <span>+{sessionInfo.phoneNumber}</span>
-                  </div>
-                  <div className="session-item">
-                    <label>Platform:</label>
-                    <span>{sessionInfo.platform}</span>
-                  </div>
-                  <div className="session-item">
-                    <label>Connected:</label>
-                    <span>{new Date(sessionInfo.connectedAt).toLocaleString()}</span>
-                  </div>
-                  <div className="session-item">
-                    <label>Duration:</label>
-                    <span className="live-timer">{liveConnectionTime || sessionInfo.sessionDuration}</span>
-                  </div>
-                </div>
-                
-                <div className="session-actions">
-                  <button 
-                    className="whatsapp-logout-button"
-                    onClick={handleWhatsAppLogout}
-                  >
-                    Logout WhatsApp
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {(whatsappStatus === 'disconnected' || whatsappStatus === 'connecting') && (
-              <div className="connection-section">
-                <div className="connection-status">
-                  <div className="connection-prompt">
-                    <p>Click to connect to WhatsApp</p>
-                    <button 
-                      className="connect-button"
-                      onClick={initializeWhatsApp}
-                    >
-                      Connect WhatsApp
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          </nav>
         </div>
 
-        <div className="bulk-section">
-          <div className="section-header">
-            <h3>Bulk Messaging</h3>
-            <div className="coming-soon">Coming Soon</div>
-          </div>
-          <p>Bulk messaging features will be available once WhatsApp is connected.</p>
+        <div className="main-content">
+          {renderMainContent()}
         </div>
       </div>
+      
+      {/* Floating WhatsApp Status Card - only show when not on dashboard */}
+      {activeView !== 'dashboard' && (
+        <WhatsAppStatusCard
+          status={whatsappStatus}
+          sessionInfo={sessionInfo}
+          onClick={() => setActiveView('dashboard')}
+        />
+      )}
     </div>
   );
 };

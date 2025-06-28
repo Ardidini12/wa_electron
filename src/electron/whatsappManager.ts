@@ -28,6 +28,8 @@ export class WhatsAppManager extends EventEmitter {
 
     constructor() {
         super();
+        // Increase max listeners to prevent memory leak warnings
+        this.setMaxListeners(100000);
         this.cleanupOrphanedSessions();
     }
 
@@ -168,6 +170,12 @@ export class WhatsAppManager extends EventEmitter {
             this.sessionInfo = null;
             this.connectedAt = null;
             this.emit('disconnected', reason);
+        });
+
+        // Set up global message acknowledgment listener
+        this.client.on('message_ack', (msg: any, ack: number) => {
+            console.log(`[WhatsApp] 📨 Global message ack received: messageId=${msg.id._serialized}, ack=${ack}`);
+            this.emit('message_ack', msg.id._serialized, ack);
         });
     }
 
@@ -410,17 +418,203 @@ export class WhatsAppManager extends EventEmitter {
     }
 
     // Bulk messaging methods (for future implementation)
-    async sendMessage(to: string, message: string): Promise<boolean> {
+    async sendMessage(to: string, message: string): Promise<string | null> {
         if (!this.client || !this.client.info) {
             throw new Error('WhatsApp client not ready');
         }
 
         try {
-            await this.client.sendMessage(to, message);
-            return true;
+            const sentMessage = await this.client.sendMessage(to, message);
+            console.log(`[WhatsApp] 📤 Full message object:`, JSON.stringify(sentMessage, null, 2));
+            
+            // Extract message ID with comprehensive fallback methods
+            let messageId = null;
+            if (sentMessage) {
+                // Try multiple ways to get the ID
+                if (sentMessage.id) {
+                    if (typeof sentMessage.id === 'string') {
+                        messageId = sentMessage.id;
+                    } else if (sentMessage.id._serialized) {
+                        messageId = sentMessage.id._serialized;
+                    } else if (sentMessage.id.id) {
+                        messageId = sentMessage.id.id;
+                    }
+                } else if (sentMessage._data && sentMessage._data.id) {
+                    if (typeof sentMessage._data.id === 'string') {
+                        messageId = sentMessage._data.id;
+                    } else if (sentMessage._data.id._serialized) {
+                        messageId = sentMessage._data.id._serialized;
+                    }
+                } else if (sentMessage.rawData && sentMessage.rawData.id) {
+                    messageId = sentMessage.rawData.id._serialized || sentMessage.rawData.id;
+                }
+                
+                // If still no ID, generate one from timestamp and recipient
+                if (!messageId) {
+                    const timestamp = Date.now();
+                    messageId = `${to}_${timestamp}_text`;
+                    console.log(`[WhatsApp] 🔧 Generated fallback ID: ${messageId}`);
+                }
+            }
+            
+            if (messageId) {
+                console.log(`[WhatsApp] ✅ Message sent with ID: ${messageId}`);
+            } else {
+                console.log(`[WhatsApp] ⚠️ Failed to extract message ID from response`);
+            }
+            
+            return messageId;
         } catch (error) {
             console.error('Failed to send message:', error);
-            return false;
+            throw error;
+        }
+    }
+
+    async sendMessageWithMedia(to: string, message: string, mediaUrls: string[]): Promise<string | null> {
+        if (!this.client || !this.client.info) {
+            throw new Error('WhatsApp client not ready');
+        }
+
+        try {
+            // Import MessageMedia from whatsapp-web.js
+            const whatsappWebJs = await import('whatsapp-web.js');
+            const MessageMedia = whatsappWebJs.default.MessageMedia;
+            
+            let lastMessageId = null;
+
+            // Send each media file with caption (text message)
+            for (const mediaUrl of mediaUrls) {
+                try {
+                    let media;
+                    
+                    // Check if it's a base64 image
+                    if (mediaUrl.startsWith('data:image/')) {
+                        // Extract base64 data and mime type
+                        const [mimeInfo, base64Data] = mediaUrl.split(',');
+                        const mimeType = mimeInfo.split(':')[1].split(';')[0];
+                        
+                        media = new MessageMedia(mimeType, base64Data);
+                    } else if (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://')) {
+                        // Handle URL images
+                        media = await MessageMedia.fromUrl(mediaUrl);
+                    } else {
+                        // Handle local file paths
+                        const fs = await import('fs');
+                        const path = await import('path');
+                        
+                        if (fs.existsSync(mediaUrl)) {
+                            const fileData = fs.readFileSync(mediaUrl, { encoding: 'base64' });
+                            const ext = path.extname(mediaUrl).toLowerCase();
+                            let mimeType = 'image/jpeg'; // default
+                            
+                            if (ext === '.png') mimeType = 'image/png';
+                            else if (ext === '.gif') mimeType = 'image/gif';
+                            else if (ext === '.webp') mimeType = 'image/webp';
+                            
+                            media = new MessageMedia(mimeType, fileData);
+                        } else {
+                            console.error(`File not found: ${mediaUrl}`);
+                            continue;
+                        }
+                    }
+                    
+                    // Send media with caption (text message)
+                    const options: any = {};
+                    if (message && message.trim()) {
+                        options.caption = message;
+                    }
+                    
+                    // Wait for the message to be sent and get the actual message object
+                    const mediaMessage = await this.client.sendMessage(to, media, options);
+                    console.log(`[WhatsApp] 📤 Full media message object:`, JSON.stringify(mediaMessage, null, 2));
+                    
+                    // Extract message ID from the actual message object
+                    if (mediaMessage) {
+                        // Try multiple ways to get the ID
+                        if (mediaMessage.id) {
+                            if (typeof mediaMessage.id === 'string') {
+                                lastMessageId = mediaMessage.id;
+                            } else if (mediaMessage.id._serialized) {
+                                lastMessageId = mediaMessage.id._serialized;
+                            } else if (mediaMessage.id.id) {
+                                lastMessageId = mediaMessage.id.id;
+                            }
+                        } else if (mediaMessage._data && mediaMessage._data.id) {
+                            if (typeof mediaMessage._data.id === 'string') {
+                                lastMessageId = mediaMessage._data.id;
+                            } else if (mediaMessage._data.id._serialized) {
+                                lastMessageId = mediaMessage._data.id._serialized;
+                            }
+                        } else if (mediaMessage.rawData && mediaMessage.rawData.id) {
+                            lastMessageId = mediaMessage.rawData.id._serialized || mediaMessage.rawData.id;
+                        }
+                        
+                        // If still no ID, try to generate one from timestamp and recipient
+                        if (!lastMessageId) {
+                            const timestamp = Date.now();
+                            lastMessageId = `${to}_${timestamp}_media`;
+                            console.log(`[WhatsApp] 🔧 Generated fallback ID: ${lastMessageId}`);
+                        }
+                    }
+                    
+                    if (lastMessageId) {
+                        console.log(`[WhatsApp] ✅ Media message sent with ID: ${lastMessageId}`);
+                    } else {
+                        console.log(`[WhatsApp] ⚠️ Failed to extract media message ID`);
+                    }
+                    
+                    // Only send caption with first image to avoid duplicate text
+                    message = '';
+                } catch (mediaError) {
+                    console.error(`Failed to send media ${mediaUrl}:`, mediaError);
+                    throw mediaError;
+                }
+            }
+            
+            // If no media but text exists, send text only
+            if (!lastMessageId && message && message.trim()) {
+                const textMessage = await this.client.sendMessage(to, message);
+                console.log(`[WhatsApp] 📤 Full text message object:`, JSON.stringify(textMessage, null, 2));
+                
+                if (textMessage) {
+                    // Try multiple ways to get the ID
+                    if (textMessage.id) {
+                        if (typeof textMessage.id === 'string') {
+                            lastMessageId = textMessage.id;
+                        } else if (textMessage.id._serialized) {
+                            lastMessageId = textMessage.id._serialized;
+                        } else if (textMessage.id.id) {
+                            lastMessageId = textMessage.id.id;
+                        }
+                    } else if (textMessage._data && textMessage._data.id) {
+                        if (typeof textMessage._data.id === 'string') {
+                            lastMessageId = textMessage._data.id;
+                        } else if (textMessage._data.id._serialized) {
+                            lastMessageId = textMessage._data.id._serialized;
+                        }
+                    } else if (textMessage.rawData && textMessage.rawData.id) {
+                        lastMessageId = textMessage.rawData.id._serialized || textMessage.rawData.id;
+                    }
+                    
+                    // If still no ID, generate one
+                    if (!lastMessageId) {
+                        const timestamp = Date.now();
+                        lastMessageId = `${to}_${timestamp}_text`;
+                        console.log(`[WhatsApp] 🔧 Generated fallback ID: ${lastMessageId}`);
+                    }
+                }
+                
+                if (lastMessageId) {
+                    console.log(`[WhatsApp] ✅ Text message sent with ID: ${lastMessageId}`);
+                } else {
+                    console.log(`[WhatsApp] ⚠️ Failed to extract text message ID`);
+                }
+            }
+            
+            return lastMessageId;
+        } catch (error) {
+            console.error('Failed to send message with media:', error);
+            throw error;
         }
     }
 
@@ -434,7 +628,7 @@ export class WhatsAppManager extends EventEmitter {
 
         for (const contact of contacts) {
             try {
-                await this.client.sendMessage(contact, message);
+                await this.sendMessage(contact, message);
                 success++;
                 
                 // Add delay between messages to avoid rate limiting

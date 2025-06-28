@@ -39,7 +39,7 @@ interface BulkMessage {
 }
 
 export class DatabaseManager {
-    private db!: Database.Database;
+    public db!: Database.Database;
     private dbPath: string;
 
     constructor() {
@@ -147,6 +147,32 @@ export class DatabaseManager {
                 updatedAt TEXT NOT NULL
             )
         `);
+
+        // Contacts table
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                surname TEXT,
+                email TEXT,
+                phone TEXT NOT NULL,
+                birthday TEXT,
+                source TEXT DEFAULT 'manual',
+                createdAt TEXT NOT NULL,
+                updatedAt TEXT
+            )
+        `);
+
+        // Templates table
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL, -- JSON content with text and images
+                createdAt TEXT NOT NULL,
+                updatedAt TEXT NOT NULL
+            )
+        `);
     }
 
     private createIndexes() {
@@ -162,6 +188,10 @@ export class DatabaseManager {
             CREATE INDEX IF NOT EXISTS idx_message_logs_campaign_id ON message_logs(campaignId);
             CREATE INDEX IF NOT EXISTS idx_message_logs_status ON message_logs(status);
             CREATE INDEX IF NOT EXISTS idx_message_logs_sent_at ON message_logs(sentAt);
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
+            CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);
+            CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
+            CREATE INDEX IF NOT EXISTS idx_templates_name ON templates(name);
         `);
     }
 
@@ -436,6 +466,359 @@ export class DatabaseManager {
         } catch (error) {
             console.error('Database backup error:', error);
             return false;
+        }
+    }
+
+    // Contact management methods
+    getContacts(page: number = 1, limit: number = 100, search: string = ''): { contacts: any[], pagination: any } {
+        try {
+            const offset = (page - 1) * limit;
+            let whereClause = '';
+            let params: any[] = [];
+
+            if (search) {
+                whereClause = 'WHERE name LIKE ? OR surname LIKE ? OR email LIKE ? OR phone LIKE ?';
+                const searchPattern = `%${search}%`;
+                params = [searchPattern, searchPattern, searchPattern, searchPattern];
+            }
+
+            // Get total count
+            const countQuery = `SELECT COUNT(*) as total FROM contacts ${whereClause}`;
+            const totalResult = this.db.prepare(countQuery).get(...params) as { total: number };
+            const total = totalResult.total;
+
+            // Get contacts
+            const contactsQuery = `
+                SELECT * FROM contacts 
+                ${whereClause}
+                ORDER BY name ASC 
+                LIMIT ? OFFSET ?
+            `;
+            const contacts = this.db.prepare(contactsQuery).all(...params, limit, offset);
+
+            const totalPages = Math.ceil(total / limit);
+
+            return {
+                contacts,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages
+                }
+            };
+        } catch (error) {
+            console.error('Database error getting contacts:', error);
+            return { contacts: [], pagination: { page: 1, limit, total: 0, totalPages: 0 } };
+        }
+    }
+
+    getAllContactIds(search: string = ''): number[] {
+        try {
+            let whereClause = '';
+            let params: any[] = [];
+
+            if (search) {
+                whereClause = 'WHERE name LIKE ? OR surname LIKE ? OR email LIKE ? OR phone LIKE ?';
+                const searchPattern = `%${search}%`;
+                params = [searchPattern, searchPattern, searchPattern, searchPattern];
+            }
+
+            const query = `SELECT id FROM contacts ${whereClause}`;
+            const results = this.db.prepare(query).all(...params) as { id: number }[];
+            return results.map(row => row.id);
+        } catch (error) {
+            console.error('Database error getting all contact IDs:', error);
+            return [];
+        }
+    }
+
+    addContact(contactData: any): any {
+        try {
+            const insertContact = this.db.prepare(`
+                INSERT INTO contacts (name, surname, email, phone, birthday, source, createdAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `);
+
+            const result = insertContact.run(
+                contactData.name || '',
+                contactData.surname || '',
+                contactData.email || '',
+                contactData.phone || '',
+                contactData.birthday || '',
+                contactData.source || 'manual',
+                new Date().toISOString()
+            );
+
+            // Return the created contact
+            const contact = this.db.prepare('SELECT * FROM contacts WHERE id = ?').get(result.lastInsertRowid);
+            return contact;
+        } catch (error) {
+            console.error('Database error adding contact:', error);
+            throw error;
+        }
+    }
+
+    updateContact(contactId: number, contactData: any): any {
+        try {
+            const updateContact = this.db.prepare(`
+                UPDATE contacts 
+                SET name = ?, surname = ?, email = ?, phone = ?, birthday = ?, updatedAt = ?
+                WHERE id = ?
+            `);
+
+            updateContact.run(
+                contactData.name || '',
+                contactData.surname || '',
+                contactData.email || '',
+                contactData.phone || '',
+                contactData.birthday || '',
+                new Date().toISOString(),
+                contactId
+            );
+
+            // Return the updated contact
+            const contact = this.db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId);
+            return contact;
+        } catch (error) {
+            console.error('Database error updating contact:', error);
+            throw error;
+        }
+    }
+
+    deleteContacts(contactIds: number[]): { deletedCount: number } {
+        try {
+            const deleteContact = this.db.prepare('DELETE FROM contacts WHERE id = ?');
+            const transaction = this.db.transaction((ids: number[]) => {
+                let deletedCount = 0;
+                for (const id of ids) {
+                    const result = deleteContact.run(id);
+                    deletedCount += result.changes;
+                }
+                return deletedCount;
+            });
+
+            const deletedCount = transaction(contactIds);
+            return { deletedCount };
+        } catch (error) {
+            console.error('Database error deleting contacts:', error);
+            throw error;
+        }
+    }
+
+    // Import/Export methods
+    importContacts(contacts: any[], skipDuplicates: boolean = true): { importedCount: number; skippedCount: number; errors: string[] } {
+        try {
+            const errors: string[] = [];
+            let importedCount = 0;
+            let skippedCount = 0;
+
+            const insertContact = this.db.prepare(`
+                INSERT INTO contacts (name, surname, email, phone, birthday, source, createdAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `);
+
+            const checkDuplicate = this.db.prepare('SELECT id FROM contacts WHERE phone = ?');
+
+            const transaction = this.db.transaction((contactList: any[]) => {
+                for (const contact of contactList) {
+                    try {
+                        // Validate required fields
+                        if (!contact.phone || !contact.phone.trim()) {
+                            errors.push(`Contact ${contact.name || 'Unknown'}: Missing phone number`);
+                            skippedCount++;
+                            continue;
+                        }
+
+                        // Check for duplicates
+                        if (skipDuplicates) {
+                            const existing = checkDuplicate.get(contact.phone.trim());
+                            if (existing) {
+                                skippedCount++;
+                                continue;
+                            }
+                        }
+
+                        // Insert contact
+                        insertContact.run(
+                            contact.name || '',
+                            contact.surname || '',
+                            contact.email || '',
+                            contact.phone.trim(),
+                            contact.birthday || '',
+                            contact.source || 'imported',
+                            new Date().toISOString()
+                        );
+                        importedCount++;
+                    } catch (err: any) {
+                        errors.push(`Contact ${contact.name || 'Unknown'}: ${err.message}`);
+                        skippedCount++;
+                    }
+                }
+            });
+
+            transaction(contacts);
+            return { importedCount, skippedCount, errors };
+        } catch (error) {
+            console.error('Database error importing contacts:', error);
+            throw error;
+        }
+    }
+
+    exportContacts(format: 'csv' | 'excel' | 'json' = 'csv'): { data: any[]; format: string } {
+        try {
+            const contacts = this.db.prepare('SELECT name, surname, email, phone, birthday, source, createdAt FROM contacts ORDER BY name ASC').all();
+            
+            return {
+                data: contacts,
+                format
+            };
+        } catch (error) {
+            console.error('Database error exporting contacts:', error);
+            throw error;
+        }
+    }
+
+    // Template management methods
+    getTemplates(page: number = 1, limit: number = 10, search: string = ''): { templates: any[], pagination: any } {
+        try {
+            const offset = (page - 1) * limit;
+            let whereClause = '';
+            let params: any[] = [];
+
+            if (search) {
+                whereClause = 'WHERE name LIKE ? OR content LIKE ?';
+                const searchPattern = `%${search}%`;
+                params = [searchPattern, searchPattern];
+            }
+
+            // Get total count
+            const countQuery = `SELECT COUNT(*) as total FROM templates ${whereClause}`;
+            const totalResult = this.db.prepare(countQuery).get(...params) as { total: number };
+            const total = totalResult.total;
+
+            // Get templates
+            const templatesQuery = `
+                SELECT * FROM templates 
+                ${whereClause}
+                ORDER BY name ASC 
+                LIMIT ? OFFSET ?
+            `;
+            const templatesRaw = this.db.prepare(templatesQuery).all(...params, limit, offset) as any[];
+
+            // Parse content JSON
+            const templates = templatesRaw.map(template => ({
+                ...template,
+                content: JSON.parse(template.content || '{"text":"","images":[]}')
+            }));
+
+            const totalPages = Math.ceil(total / limit);
+
+            return {
+                templates,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages
+                }
+            };
+        } catch (error) {
+            console.error('Database error getting templates:', error);
+            return { templates: [], pagination: { page: 1, limit, total: 0, totalPages: 0 } };
+        }
+    }
+
+    getAllTemplateIds(search: string = ''): number[] {
+        try {
+            let whereClause = '';
+            let params: any[] = [];
+
+            if (search) {
+                whereClause = 'WHERE name LIKE ? OR content LIKE ?';
+                const searchPattern = `%${search}%`;
+                params = [searchPattern, searchPattern];
+            }
+
+            const query = `SELECT id FROM templates ${whereClause}`;
+            const results = this.db.prepare(query).all(...params) as { id: number }[];
+            return results.map(row => row.id);
+        } catch (error) {
+            console.error('Database error getting all template IDs:', error);
+            return [];
+        }
+    }
+
+    addTemplate(templateData: any): any {
+        try {
+            const insertTemplate = this.db.prepare(`
+                INSERT INTO templates (name, content, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?)
+            `);
+
+            const result = insertTemplate.run(
+                templateData.name,
+                JSON.stringify(templateData.content),
+                new Date().toISOString(),
+                new Date().toISOString()
+            );
+
+            // Return the created template
+            const templateRaw = this.db.prepare('SELECT * FROM templates WHERE id = ?').get(result.lastInsertRowid) as any;
+            return {
+                ...templateRaw,
+                content: JSON.parse(templateRaw.content || '{"text":"","images":[]}')
+            };
+        } catch (error) {
+            console.error('Database error adding template:', error);
+            throw error;
+        }
+    }
+
+    updateTemplate(templateId: number, templateData: any): any {
+        try {
+            const updateTemplate = this.db.prepare(`
+                UPDATE templates 
+                SET name = ?, content = ?, updatedAt = ?
+                WHERE id = ?
+            `);
+
+            updateTemplate.run(
+                templateData.name,
+                JSON.stringify(templateData.content),
+                new Date().toISOString(),
+                templateId
+            );
+
+            // Return the updated template
+            const templateRaw = this.db.prepare('SELECT * FROM templates WHERE id = ?').get(templateId) as any;
+            return {
+                ...templateRaw,
+                content: JSON.parse(templateRaw.content || '{"text":"","images":[]}')
+            };
+        } catch (error) {
+            console.error('Database error updating template:', error);
+            throw error;
+        }
+    }
+
+    deleteTemplates(templateIds: number[]): { deletedCount: number } {
+        try {
+            const deleteTemplate = this.db.prepare('DELETE FROM templates WHERE id = ?');
+            const transaction = this.db.transaction((ids: number[]) => {
+                let deletedCount = 0;
+                for (const id of ids) {
+                    const result = deleteTemplate.run(id);
+                    deletedCount += result.changes;
+                }
+                return deletedCount;
+            });
+
+            const deletedCount = transaction(templateIds);
+            return { deletedCount };
+        } catch (error) {
+            console.error('Database error deleting templates:', error);
+            throw error;
         }
     }
 } 

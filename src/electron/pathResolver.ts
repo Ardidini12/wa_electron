@@ -4,9 +4,9 @@ import { isDev } from './util.js';
 
 
 export function getPreloadPath() {
-    return path.join(
-        app.getAppPath(),
-        isDev() ? '.' : '..',
-        '/dist-electron/preload.cjs'
-    );
+    if (isDev()) {
+        return path.join(app.getAppPath(), 'dist-electron/preload.cjs');
+    } else {
+        return path.join(app.getAppPath(), 'dist-electron/preload.cjs');
+    }
 }

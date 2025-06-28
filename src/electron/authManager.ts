@@ -54,6 +54,8 @@ export class AuthManager extends EventEmitter {
 
     constructor() {
         super();
+        // Increase max listeners to prevent memory leak warnings
+        this.setMaxListeners(100000);
         this.db = new DatabaseManager();
         
         this.sessionStore = new Store({
